@@ -112,6 +112,29 @@ jobs:
                       print(f"✔ 成功修复 {fpath} 的 union __packed 声明")
               except Exception as e:
                   print(f"处理 {fpath} 出错: {e}")
+
+          # 6. 修复 selinux_state __rticdata 导致的 AArch64 ADRP 重定位截断溢出
+          try:
+              with open("include/linux/init.h", "r", encoding="utf-8", errors="ignore") as f:
+                  ih = f.read()
+              ih = ih.replace('#define __rticdata  __attribute__((section(".bss.rtic")))', '#define __rticdata')
+              with open("include/linux/init.h", "w", encoding="utf-8") as f:
+                  f.write(ih)
+
+              with open("security/selinux/hooks.c", "r", encoding="utf-8", errors="ignore") as f:
+                  sh = f.read()
+              sh = sh.replace("struct selinux_state selinux_state __rticdata;", "struct selinux_state selinux_state;")
+              with open("security/selinux/hooks.c", "w", encoding="utf-8") as f:
+                  f.write(sh)
+
+              with open("arch/arm64/kernel/vmlinux.lds.S", "r", encoding="utf-8", errors="ignore") as f:
+                  vl = f.read()
+              vl = vl.replace("RTIC_BSS", "/* RTIC_BSS */")
+              with open("arch/arm64/kernel/vmlinux.lds.S", "w", encoding="utf-8") as f:
+                  f.write(vl)
+              print("✔ 成功修复 selinux_state RTIC 重定位截断溢出问题")
+          except Exception as e:
+              print(f"处理 RTIC 出错: {e}")
           PY
 
           # 清理旧有的残留链接或子模块目录
