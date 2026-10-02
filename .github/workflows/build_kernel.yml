@@ -111,7 +111,7 @@ jobs:
           print(">> 兼容性扫描与修补完成！")
           PY
 
-      - name: 编译内核
+      - name: 编译内核与设备树
         run: |
           cd $GITHUB_WORKSPACE/kernel
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
@@ -124,69 +124,57 @@ jobs:
             OBJDUMP=llvm-objdump \
             vendor/gauguin_user_defconfig
 
-          echo ">> 开始并行编译内核..."
+          echo ">> 开始并行编译内核及 DTB..."
           make O=out CC=clang ARCH=arm64 \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
             OBJDUMP=llvm-objdump \
-            -j$(nproc) 2>&1 | tee $GITHUB_WORKSPACE/build.log || (echo "=== 编译失败，输出最后 100 行关键日志 ===" && tail -n 100 $GITHUB_WORKSPACE/build.log && exit 1)
+            -j$(nproc) Image dtbs 2>&1 | tee $GITHUB_WORKSPACE/build.log || (echo "=== 编译失败，输出最后 100 行关键日志 ===" && tail -n 100 $GITHUB_WORKSPACE/build.log && exit 1)
 
-      - name: 生成合并 DTB 文件
+      - name: 提取产物并合成最终刷机文件
         run: |
           cd $GITHUB_WORKSPACE
           mkdir -p out_artifacts
-          echo ">> 正在查找并合并 Qualcomm sm7225 DTB..."
-          find kernel/out/arch/arm64/boot/dts/vendor/qcom -name "*.dtb" -exec cat {} + > out_artifacts/dtb
           cp kernel/out/arch/arm64/boot/Image out_artifacts/Image
-          if [ -f kernel/out/arch/arm64/boot/dtbo.img ]; then
-            cp kernel/out/arch/arm64/boot/dtbo.img out_artifacts/dtbo.img
-          fi
-
-      - name: 打包 AnyKernel3 卡刷包
-        run: |
-          cd $GITHUB_WORKSPACE
-          echo ">> 拉取 AnyKernel3 模版..."
-          git clone https://github.com/Molyuu/AnyKernel3.git -b main AnyKernel3
           
-          cp out_artifacts/Image AnyKernel3/Image
-          cp out_artifacts/dtb AnyKernel3/dtb
-          if [ -f out_artifacts/dtbo.img ]; then
-            cp out_artifacts/dtbo.img AnyKernel3/dtbo.img
-          fi
-
-          cd AnyKernel3
-          KSU_TYPE="${{ github.event.inputs.ksu_type || 'ksu_next' }}"
-          ZIP_NAME="AnyKernel3-Gauguin-KernelSU-${KSU_TYPE}-$(date +'%Y%m%d%H%M').zip"
-          zip -r9 ../$ZIP_NAME * -x .git README.md
-          echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
-          mv ../$ZIP_NAME $GITHUB_WORKSPACE/out_artifacts/
-
-      - name: 解包原机 boot 并合成 boot-kernelsu.img
-        run: |
-          cd $GITHUB_WORKSPACE
+          # 合并所有生成的 dtb 文件（容错处理）
+          find kernel/out -name "*.dtb" | xargs -r cat > out_artifacts/dtb || true
+          
+          # 拉取 AnyKernel3 模版
+          git clone --depth=1 https://github.com/Molyuu/AnyKernel3.git -b main AnyKernel3
+          
+          # 解包原厂 pure_stock_boot.img 并合成 boot-kernelsu.img
           if [ -f "pure_stock_boot.img.gz" ]; then
-            echo ">> 检测到原机 pure_stock_boot.img.gz，开始解压并重打包 boot-kernelsu.img..."
+            echo ">> 正在从原机纯净底包合成 boot-kernelsu.img..."
             gzip -dc pure_stock_boot.img.gz > pure_stock_boot.img
             
-            # 使用 AnyKernel3 自带的 Linux 版 magiskboot
             cp AnyKernel3/tools/magiskboot .
             chmod +x magiskboot
             
             mkdir boot_unpack && cd boot_unpack
             ../magiskboot unpack ../pure_stock_boot.img
             
-            # 替换内核与 DTB
+            # 替换内核为刚刚编译出的 KernelSU 内核
             cp ../out_artifacts/Image kernel
-            cp ../out_artifacts/dtb dtb
+            if [ -s ../out_artifacts/dtb ]; then
+              cp ../out_artifacts/dtb dtb
+            fi
             
-            # 重新打包
             ../magiskboot repack ../pure_stock_boot.img ../out_artifacts/boot-kernelsu.img
             cd ..
-            echo ">> boot-kernelsu.img 打包完成！"
-          else
-            echo ">> 未检测到 pure_stock_boot.img.gz，跳过直接重打包 boot.img"
+            echo ">> boot-kernelsu.img 合成成功！"
           fi
+
+          # 打包 AnyKernel3 卡刷包
+          cp out_artifacts/Image AnyKernel3/Image
+          if [ -s out_artifacts/dtb ]; then
+            cp out_artifacts/dtb AnyKernel3/dtb
+          fi
+          cd AnyKernel3
+          ZIP_NAME="AnyKernel3-Gauguin-KernelSU-$(date +'%Y%m%d%H%M').zip"
+          zip -r9 ../out_artifacts/$ZIP_NAME * -x .git README.md
+          echo ">> AnyKernel3 打包成功: $ZIP_NAME"
 
       - name: 上传编译产物 Artifacts
         uses: actions/upload-artifact@v4
