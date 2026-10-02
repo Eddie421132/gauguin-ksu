@@ -97,13 +97,16 @@ jobs:
           # 拉取 AnyKernel3 模版
           git clone --depth=1 https://github.com/Molyuu/AnyKernel3.git -b main AnyKernel3
           
+          # 获取 Linux x86_64 架构原生的 magiskboot 二进制
+          echo ">> 下载官方 x86_64 架构 magiskboot..."
+          wget -q https://github.com/topjohnwu/Magisk/releases/download/v30.7/Magisk-v30.7.apk -O magisk.apk
+          unzip -p magisk.apk lib/x86_64/libmagiskboot.so > magiskboot
+          chmod +x magiskboot
+          
           # 解包原厂 pure_stock_boot.img 并合成 boot-kernelsu.img
           if [ -f "pure_stock_boot.img.gz" ]; then
             echo ">> 正在从原机纯净底包合成 boot-kernelsu.img..."
             gzip -dc pure_stock_boot.img.gz > pure_stock_boot.img
-            
-            cp AnyKernel3/tools/magiskboot .
-            chmod +x magiskboot
             
             mkdir boot_unpack && cd boot_unpack
             ../magiskboot unpack ../pure_stock_boot.img
