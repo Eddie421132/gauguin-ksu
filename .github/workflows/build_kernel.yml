@@ -44,8 +44,6 @@ jobs:
           echo ">> 修复 Ubuntu GCC 10+ 下 dtc-lexer yylloc 重复定义..."
           sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/' scripts/dtc/dtc-lexer.l || true
 
-          echo ">> 移除 Makefile 中的 -Werror，避免 Clang 严格警告导致终止..."
-          sed -i 's/-Werror//g' Makefile || true
 
           echo ">> 核心补丁：修改 kernel/module.c，无条件放行 MIUI 原厂 /vendor/lib/modules 硬件驱动..."
           python3 - <<'PY'
