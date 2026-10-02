@@ -75,6 +75,30 @@ jobs:
 
           with open(p, "w", encoding="utf-8") as f:
               f.write(s)
+
+          # 3. 修复 Makefile GCC_TOOLCHAIN_DIR 前缀 (解决 Clang 12+ as: unrecognized option '-EL')
+          with open("Makefile", "r", encoding="utf-8", errors="ignore") as f:
+              mf = f.read()
+          old_prefix = "CLANG_FLAGS\t+= --prefix=$(GCC_TOOLCHAIN_DIR)\n"
+          new_prefix = "CLANG_FLAGS\t+= --prefix=$(GCC_TOOLCHAIN_DIR)$(notdir $(CROSS_COMPILE))\n"
+          if old_prefix in mf:
+              mf = mf.replace(old_prefix, new_prefix)
+              print("✔ 成功修复 Makefile Clang cross prefix")
+          else:
+              import re
+              mf, count3 = re.subn(r'(CLANG_FLAGS\s*\+=\s*--prefix=\$\(GCC_TOOLCHAIN_DIR\))', r'\1$(notdir $(CROSS_COMPILE))', mf)
+              print(f"正则替换 Clang cross prefix 结果: {count3} 处修改")
+          with open("Makefile", "w", encoding="utf-8") as f:
+              f.write(mf)
+
+          # 4. 补充 lib/string.c stpcpy 符号 (避免 Clang 12+ libcall 优化导致未定义符号)
+          with open("lib/string.c", "r", encoding="utf-8", errors="ignore") as f:
+              sc = f.read()
+          if "stpcpy" not in sc:
+              sc += "\nchar *stpcpy(char *__restrict__ dest, const char *__restrict__ src);\nchar *stpcpy(char *__restrict__ dest, const char *__restrict__ src)\n{\n\twhile ((*dest++ = *src++) != '\\0')\n\t\t/* nothing */;\n\treturn --dest;\n}\nEXPORT_SYMBOL(stpcpy);\n"
+              with open("lib/string.c", "w", encoding="utf-8") as f:
+                  f.write(sc)
+              print("✔ 成功向 lib/string.c 注入 stpcpy 兼容实现")
           PY
 
           # 清理旧有的残留链接或子模块目录
