@@ -129,7 +129,12 @@ jobs:
 
               with open("arch/arm64/kernel/vmlinux.lds.S", "r", encoding="utf-8", errors="ignore") as f:
                   vl = f.read()
-              vl = vl.replace("RTIC_BSS", "/* RTIC_BSS */")
+              old_rtic_def = '#define RTIC_BSS\t\t\t\t\t\\\n\t. = ALIGN(PAGE_SIZE);\t\t\t\t\\\n\tKEEP(*(.bss.rtic));\t\t\t\\\n\t. = ALIGN(PAGE_SIZE);'
+              if old_rtic_def in vl:
+                  vl = vl.replace(old_rtic_def, '#define RTIC_BSS')
+              else:
+                  import re
+                  vl = re.sub(r'#define\s+RTIC_BSS[^\n]+\n(?:[^\n]+\n){3}', '#define RTIC_BSS\n', vl)
               with open("arch/arm64/kernel/vmlinux.lds.S", "w", encoding="utf-8") as f:
                   f.write(vl)
               print("✔ 成功修复 selinux_state RTIC 重定位截断溢出问题")
