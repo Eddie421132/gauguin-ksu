@@ -1,6 +1,9 @@
 name: Build Gauguin KernelSU Kernel
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       ksu_type:
@@ -49,12 +52,16 @@ jobs:
           # 清理旧有的残留链接或子模块目录
           rm -rf KernelSU KernelSU-Next drivers/kernelsu
           
-          if [ "${{ inputs.ksu_type }}" = "ksu_next" ]; then
+          KSU_TYPE="${{ github.event.inputs.ksu_type || 'ksu_next' }}"
+          KSU_VER="${{ github.event.inputs.ksu_version || 'main' }}"
+          echo ">> 当前构建参数: KSU_TYPE=$KSU_TYPE, KSU_VER=$KSU_VER"
+
+          if [ "$KSU_TYPE" = "ksu_next" ]; then
             echo ">> 正在安装 KernelSU-Next (具有更好的 4.19 Non-GKI 支持与 SUSFS 兼容)..."
             curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
           else
-            echo ">> 正在安装官方 KernelSU (${{ inputs.ksu_version }})..."
-            curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s ${{ inputs.ksu_version }}
+            echo ">> 正在安装官方 KernelSU ($KSU_VER)..."
+            curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s "$KSU_VER"
           fi
 
           DEFCONFIG="arch/arm64/configs/vendor/gauguin_user_defconfig"
@@ -149,7 +156,8 @@ jobs:
           fi
 
           cd AnyKernel3
-          ZIP_NAME="AnyKernel3-Gauguin-KernelSU-${{ inputs.ksu_type }}-$(date +'%Y%m%d%H%M').zip"
+          KSU_TYPE="${{ github.event.inputs.ksu_type || 'ksu_next' }}"
+          ZIP_NAME="AnyKernel3-Gauguin-KernelSU-${KSU_TYPE}-$(date +'%Y%m%d%H%M').zip"
           zip -r9 ../$ZIP_NAME * -x .git README.md
           echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
           mv ../$ZIP_NAME $GITHUB_WORKSPACE/out_artifacts/
