@@ -1,0 +1,143 @@
+name: Build Gauguin KernelSU Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      ksu_type:
+        description: 'KernelSU 变种版本'
+        required: true
+        default: 'official'
+        type: choice
+        options:
+          - 'official'
+          - 'ksu_next'
+      ksu_version:
+        description: 'KernelSU 分支或 Tag (如 main, v0.9.5)'
+        required: true
+        default: 'main'
+        type: string
+
+jobs:
+  build:
+    name: Compile Gauguin Kernel
+    runs-on: ubuntu-22.04
+    steps:
+      - name: 检出当前仓库
+        uses: actions/checkout@v4
+
+      - name: 安装 Linux 编译依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev \
+            python3 python-is-python3 libncurses-dev zip curl git ccache libxml2-utils \
+            device-tree-compiler binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
+
+      - name: 拉取 Proton-Clang 交叉编译工具链
+        run: |
+          echo ">> 正在下载 Proton-Clang 工具链..."
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git $GITHUB_WORKSPACE/clang
+
+      - name: 拉取小米 Gauguin 内核源码
+        run: |
+          echo ">> 正在拉取适配 Gauguin (骁龙750G) 的内核源码..."
+          git clone --depth=1 https://github.com/Molyuu/neko_kernel_xiaomi_gauguin.git -b feature/KSU $GITHUB_WORKSPACE/kernel
+
+      - name: 集成 KernelSU 驱动与配置
+        run: |
+          cd $GITHUB_WORKSPACE/kernel
+          if [ "${{ inputs.ksu_type }}" = "ksu_next" ]; then
+            echo ">> 正在安装 KernelSU-Next..."
+            curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
+          else
+            echo ">> 正在安装官方 KernelSU (${{ inputs.ksu_version }})..."
+            curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s ${{ inputs.ksu_version }}
+          fi
+
+          DEFCONFIG="arch/arm64/configs/vendor/gauguin_user_defconfig"
+          echo ">> 配置 defconfig 启用 KPROBES 与 OVERLAY_FS..."
+          scripts/config --file $DEFCONFIG -e KPROBES
+          scripts/config --file $DEFCONFIG -e HAVE_KPROBES
+          scripts/config --file $DEFCONFIG -e KPROBE_EVENTS
+          scripts/config --file $DEFCONFIG -e OVERLAY_FS
+          scripts/config --file $DEFCONFIG -e KSU
+
+      - name: 编译内核
+        run: |
+          cd $GITHUB_WORKSPACE/kernel
+          export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
+          
+          echo ">> 生成内核 .config..."
+          make O=out CC=clang ARCH=arm64 \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+            vendor/gauguin_user_defconfig
+
+          echo ">> 开始并行编译内核 (约需 10-15 分钟)..."
+          make O=out CC=clang ARCH=arm64 \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+            -j$(nproc)
+
+      - name: 生成合并 DTB 文件
+        run: |
+          cd $GITHUB_WORKSPACE
+          mkdir -p out_artifacts
+          echo ">> 正在查找并合并 Qualcomm sm7225 DTB..."
+          find kernel/out/arch/arm64/boot/dts/vendor/qcom -name "*.dtb" -exec cat {} + > out_artifacts/dtb
+          cp kernel/out/arch/arm64/boot/Image out_artifacts/Image
+          if [ -f kernel/out/arch/arm64/boot/dtbo.img ]; then
+            cp kernel/out/arch/arm64/boot/dtbo.img out_artifacts/dtbo.img
+          fi
+
+      - name: 打包 AnyKernel3 卡刷包
+        run: |
+          cd $GITHUB_WORKSPACE
+          echo ">> 拉取 AnyKernel3 模版..."
+          git clone https://github.com/Molyuu/AnyKernel3.git -b main AnyKernel3
+          
+          cp out_artifacts/Image AnyKernel3/Image
+          cp out_artifacts/dtb AnyKernel3/dtb
+          if [ -f out_artifacts/dtbo.img ]; then
+            cp out_artifacts/dtbo.img AnyKernel3/dtbo.img
+          fi
+
+          cd AnyKernel3
+          ZIP_NAME="AnyKernel3-Gauguin-KernelSU-${{ inputs.ksu_type }}-$(date +'%Y%m%d%H%M').zip"
+          zip -r9 ../$ZIP_NAME * -x .git README.md
+          echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+          mv ../$ZIP_NAME $GITHUB_WORKSPACE/out_artifacts/
+
+      - name: 解包原机 boot 并合成 boot-kernelsu.img
+        run: |
+          cd $GITHUB_WORKSPACE
+          if [ -f "pure_stock_boot.img.gz" ]; then
+            echo ">> 检测到原机 pure_stock_boot.img.gz，开始解压并重打包 boot-kernelsu.img..."
+            gzip -dc pure_stock_boot.img.gz > pure_stock_boot.img
+            
+            # 使用 AnyKernel3 自带的 Linux 版 magiskboot
+            cp AnyKernel3/tools/magiskboot .
+            chmod +x magiskboot
+            
+            mkdir boot_unpack && cd boot_unpack
+            ../magiskboot unpack ../pure_stock_boot.img
+            
+            # 替换内核与 DTB
+            cp ../out_artifacts/Image kernel
+            cp ../out_artifacts/dtb dtb
+            
+            # 重新打包
+            ../magiskboot repack ../pure_stock_boot.img ../out_artifacts/boot-kernelsu.img
+            cd ..
+            echo ">> boot-kernelsu.img 打包完成！"
+          else
+            echo ">> 未检测到 pure_stock_boot.img.gz，跳过直接重打包 boot.img"
+          fi
+
+      - name: 上传编译产物 Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Gauguin-KernelSU-Output
+          path: |
+            out_artifacts/*

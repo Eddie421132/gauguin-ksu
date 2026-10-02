@@ -1,0 +1,9 @@
+# Ignore build directories
+kernel/
+clang/
+AnyKernel3/
+out_artifacts/
+boot_unpack/
+*.zip
+*.img
+!pure_stock_boot.img.gz
