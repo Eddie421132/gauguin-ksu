@@ -6,11 +6,11 @@ on:
       ksu_type:
         description: 'KernelSU 变种版本'
         required: true
-        default: 'official'
+        default: 'ksu_next'
         type: choice
         options:
-          - 'official'
           - 'ksu_next'
+          - 'official'
       ksu_version:
         description: 'KernelSU 分支或 Tag (如 main, v0.9.5)'
         required: true
@@ -37,16 +37,20 @@ jobs:
           echo ">> 正在下载 Proton-Clang 工具链..."
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git $GITHUB_WORKSPACE/clang
 
-      - name: 拉取小米 Gauguin 内核源码
+      - name: 拉取小米 Gauguin 内核源码 (main 干净分支)
         run: |
-          echo ">> 正在拉取适配 Gauguin (骁龙750G) 的内核源码..."
-          git clone --depth=1 https://github.com/Molyuu/neko_kernel_xiaomi_gauguin.git -b feature/KSU $GITHUB_WORKSPACE/kernel
+          echo ">> 正在拉取 Gauguin (骁龙750G) 官方维护的干净主分支源码..."
+          git clone --depth=1 https://github.com/Molyuu/neko_kernel_xiaomi_gauguin.git -b main $GITHUB_WORKSPACE/kernel
 
-      - name: 集成 KernelSU 驱动与配置
+      - name: 集成 KernelSU 驱动与内核配置
         run: |
           cd $GITHUB_WORKSPACE/kernel
+          
+          # 清理旧有的残留链接或子模块目录
+          rm -rf KernelSU KernelSU-Next drivers/kernelsu
+          
           if [ "${{ inputs.ksu_type }}" = "ksu_next" ]; then
-            echo ">> 正在安装 KernelSU-Next..."
+            echo ">> 正在安装 KernelSU-Next (具有更好的 4.19 Non-GKI 支持与 SUSFS 兼容)..."
             curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
           else
             echo ">> 正在安装官方 KernelSU (${{ inputs.ksu_version }})..."
@@ -54,7 +58,7 @@ jobs:
           fi
 
           DEFCONFIG="arch/arm64/configs/vendor/gauguin_user_defconfig"
-          echo ">> 配置 defconfig 启用 KPROBES 与 OVERLAY_FS..."
+          echo ">> 开启 KPROBES、OVERLAY_FS 及 KSU 支持..."
           scripts/config --file $DEFCONFIG -e KPROBES
           scripts/config --file $DEFCONFIG -e HAVE_KPROBES
           scripts/config --file $DEFCONFIG -e KPROBE_EVENTS
@@ -71,14 +75,16 @@ jobs:
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+            OBJDUMP=llvm-objdump \
             vendor/gauguin_user_defconfig
 
-          echo ">> 开始并行编译内核 (约需 10-15 分钟)..."
+          echo ">> 开始并行编译内核..."
           make O=out CC=clang ARCH=arm64 \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
-            -j$(nproc)
+            OBJDUMP=llvm-objdump \
+            -j$(nproc) 2>&1 | tee $GITHUB_WORKSPACE/build.log || (echo "=== 编译失败，输出最后 100 行关键日志 ===" && tail -n 100 $GITHUB_WORKSPACE/build.log && exit 1)
 
       - name: 生成合并 DTB 文件
         run: |
