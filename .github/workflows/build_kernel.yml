@@ -99,6 +99,19 @@ jobs:
               with open("lib/string.c", "w", encoding="utf-8") as f:
                   f.write(sc)
               print("✔ 成功向 lib/string.c 注入 stpcpy 兼容实现")
+
+          # 5. 修复 gsi.c 和 msm_gsi.h 中误用的 union __packed 导致 genksyms 崩溃及 ld 链接失败
+          for fpath in ["drivers/platform/msm/gsi/gsi.c", "drivers/platform/msm/gsi/gsi.h", "include/linux/msm_gsi.h"]:
+              try:
+                  with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
+                      c = f.read()
+                  if "union __packed" in c:
+                      c = c.replace("union __packed", "union")
+                      with open(fpath, "w", encoding="utf-8") as f:
+                          f.write(c)
+                      print(f"✔ 成功修复 {fpath} 的 union __packed 声明")
+              except Exception as e:
+                  print(f"处理 {fpath} 出错: {e}")
           PY
 
           # 清理旧有的残留链接或子模块目录
