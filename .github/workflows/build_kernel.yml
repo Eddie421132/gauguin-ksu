@@ -72,46 +72,15 @@ jobs:
           scripts/config --file $DEFCONFIG -e OVERLAY_FS
           scripts/config --file $DEFCONFIG -e KSU
 
-      - name: 修复旧内核兼容 (MODULE_IMPORT_NS 等宏兼容)
+      - name: 彻底消除旧内核兼容问题 (删除 MODULE_IMPORT_NS)
         run: |
           cd $GITHUB_WORKSPACE/kernel
-          echo ">> 向 include/linux/module.h 注入 MODULE_IMPORT_NS 回退宏..."
+          echo ">> 在内核与 KernelSU 源码中彻底移除 4.19 不支持的 MODULE_IMPORT_NS 调用..."
           grep -q "MODULE_IMPORT_NS" include/linux/module.h || printf "\n#ifndef MODULE_IMPORT_NS\n#define MODULE_IMPORT_NS(ns)\n#endif\n" >> include/linux/module.h
+          find . -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i '/MODULE_IMPORT_NS/d' {} +
+          echo ">> MODULE_IMPORT_NS 清理完毕！"
 
-          echo ">> 递归扫描并修补 KernelSU 源码中所有 MODULE_IMPORT_NS 引用..."
-          python3 - <<'PY'
-          import glob, os
-
-          patterns = [
-              "drivers/kernelsu/**/*.c",
-              "drivers/kernelsu/**/*.h",
-              "KernelSU*/**/*.c",
-              "KernelSU*/**/*.h"
-          ]
-          
-          files = set()
-          for pat in patterns:
-              files.update(glob.glob(pat, recursive=True))
-
-          for filepath in files:
-              if not os.path.isfile(filepath):
-                  continue
-              try:
-                  with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
-                      content = f.read()
-              except Exception:
-                  continue
-              
-              if "MODULE_IMPORT_NS" in content:
-                  if "#ifndef MODULE_IMPORT_NS" not in content:
-                      content = "#ifndef MODULE_IMPORT_NS\n#define MODULE_IMPORT_NS(ns)\n#endif\n" + content
-                      with open(filepath, 'w', encoding='utf-8') as f:
-                          f.write(content)
-                      print(f">> 成功为源码注入兼容宏: {filepath}")
-          print(">> 兼容性扫描与修补完成！")
-          PY
-
-      - name: 编译内核与设备树
+      - name: 编译内核 Image
         run: |
           cd $GITHUB_WORKSPACE/kernel
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
@@ -124,23 +93,21 @@ jobs:
             OBJDUMP=llvm-objdump \
             vendor/gauguin_user_defconfig
 
-          echo ">> 开始并行编译内核及 DTB..."
+          echo ">> 开始并行编译内核 Image..."
           make O=out CC=clang ARCH=arm64 \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
             OBJDUMP=llvm-objdump \
-            -j$(nproc) Image dtbs 2>&1 | tee $GITHUB_WORKSPACE/build.log || (echo "=== 编译失败，输出最后 100 行关键日志 ===" && tail -n 100 $GITHUB_WORKSPACE/build.log && exit 1)
+            -j$(nproc) Image
 
-      - name: 提取产物并合成最终刷机文件
+      - name: 提取产物并合成最终刷机镜像
         run: |
           cd $GITHUB_WORKSPACE
           mkdir -p out_artifacts
           cp kernel/out/arch/arm64/boot/Image out_artifacts/Image
-          
-          # 合并所有生成的 dtb 文件（容错处理）
-          find kernel/out -name "*.dtb" | xargs -r cat > out_artifacts/dtb || true
-          
+          echo ">> 内核 Image 提取成功: $(ls -lh out_artifacts/Image)"
+
           # 拉取 AnyKernel3 模版
           git clone --depth=1 https://github.com/Molyuu/AnyKernel3.git -b main AnyKernel3
           
@@ -155,22 +122,21 @@ jobs:
             mkdir boot_unpack && cd boot_unpack
             ../magiskboot unpack ../pure_stock_boot.img
             
-            # 替换内核为刚刚编译出的 KernelSU 内核
+            # 替换内核为刚刚编译出的 KernelSU 内核 (DTB 保留原机出厂 100% 完美匹配的 DTB)
             cp ../out_artifacts/Image kernel
-            if [ -s ../out_artifacts/dtb ]; then
-              cp ../out_artifacts/dtb dtb
-            fi
             
             ../magiskboot repack ../pure_stock_boot.img ../out_artifacts/boot-kernelsu.img
+            # 提取原厂完美 DTB
+            if [ -f dtb ]; then
+              cp dtb ../out_artifacts/dtb
+              cp dtb ../AnyKernel3/dtb
+            fi
             cd ..
             echo ">> boot-kernelsu.img 合成成功！"
           fi
 
           # 打包 AnyKernel3 卡刷包
           cp out_artifacts/Image AnyKernel3/Image
-          if [ -s out_artifacts/dtb ]; then
-            cp out_artifacts/dtb AnyKernel3/dtb
-          fi
           cd AnyKernel3
           ZIP_NAME="AnyKernel3-Gauguin-KernelSU-$(date +'%Y%m%d%H%M').zip"
           zip -r9 ../out_artifacts/$ZIP_NAME * -x .git README.md
