@@ -65,6 +65,45 @@ jobs:
           scripts/config --file $DEFCONFIG -e OVERLAY_FS
           scripts/config --file $DEFCONFIG -e KSU
 
+      - name: 修复旧内核兼容 (MODULE_IMPORT_NS 等宏兼容)
+        run: |
+          cd $GITHUB_WORKSPACE/kernel
+          echo ">> 向 include/linux/module.h 注入 MODULE_IMPORT_NS 回退宏..."
+          grep -q "MODULE_IMPORT_NS" include/linux/module.h || printf "\n#ifndef MODULE_IMPORT_NS\n#define MODULE_IMPORT_NS(ns)\n#endif\n" >> include/linux/module.h
+
+          echo ">> 递归扫描并修补 KernelSU 源码中所有 MODULE_IMPORT_NS 引用..."
+          python3 - <<'PY'
+          import glob, os
+
+          patterns = [
+              "drivers/kernelsu/**/*.c",
+              "drivers/kernelsu/**/*.h",
+              "KernelSU*/**/*.c",
+              "KernelSU*/**/*.h"
+          ]
+          
+          files = set()
+          for pat in patterns:
+              files.update(glob.glob(pat, recursive=True))
+
+          for filepath in files:
+              if not os.path.isfile(filepath):
+                  continue
+              try:
+                  with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                      content = f.read()
+              except Exception:
+                  continue
+              
+              if "MODULE_IMPORT_NS" in content:
+                  if "#ifndef MODULE_IMPORT_NS" not in content:
+                      content = "#ifndef MODULE_IMPORT_NS\n#define MODULE_IMPORT_NS(ns)\n#endif\n" + content
+                      with open(filepath, 'w', encoding='utf-8') as f:
+                          f.write(content)
+                      print(f">> 成功为源码注入兼容宏: {filepath}")
+          print(">> 兼容性扫描与修补完成！")
+          PY
+
       - name: 编译内核
         run: |
           cd $GITHUB_WORKSPACE/kernel
