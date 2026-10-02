@@ -57,7 +57,7 @@ jobs:
           echo ">> 当前构建参数: KSU_TYPE=$KSU_TYPE, KSU_VER=$KSU_VER"
 
           if [ "$KSU_TYPE" = "ksu_next" ]; then
-            echo ">> 正在安装 KernelSU-Next (具有更好的 4.19 Non-GKI 支持与 SUSFS 兼容)..."
+            echo ">> 正在安装 KernelSU-Next..."
             curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
           else
             echo ">> 正在安装官方 KernelSU ($KSU_VER)..."
@@ -72,13 +72,10 @@ jobs:
           scripts/config --file $DEFCONFIG -e OVERLAY_FS
           scripts/config --file $DEFCONFIG -e KSU
 
-      - name: 彻底消除旧内核兼容问题 (删除 MODULE_IMPORT_NS)
-        run: |
-          cd $GITHUB_WORKSPACE/kernel
-          echo ">> 在内核与 KernelSU 源码中彻底移除 4.19 不支持的 MODULE_IMPORT_NS 调用..."
-          grep -q "MODULE_IMPORT_NS" include/linux/module.h || printf "\n#ifndef MODULE_IMPORT_NS\n#define MODULE_IMPORT_NS(ns)\n#endif\n" >> include/linux/module.h
-          find . -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i '/MODULE_IMPORT_NS/d' {} +
-          echo ">> MODULE_IMPORT_NS 清理完毕！"
+          # 仅针对 init.c 中的 MODULE_IMPORT_NS 进行注释屏蔽（不修改原生内核头文件）
+          echo ">> 屏蔽 KernelSU 中 4.19 内核不支持的 MODULE_IMPORT_NS..."
+          find . -type f -name "init.c" -exec sed -i 's/MODULE_IMPORT_NS/\/\/ MODULE_IMPORT_NS/g' {} +
+          echo ">> 屏蔽完成！"
 
       - name: 编译内核 Image
         run: |
