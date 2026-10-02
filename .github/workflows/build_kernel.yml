@@ -32,24 +32,62 @@ jobs:
           echo ">> 正在下载 Proton-Clang 工具链..."
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git $GITHUB_WORKSPACE/clang
 
-      - name: 拉取小米 Gauguin 内核源码 (main 干净分支)
+      - name: 拉取小米官方开源内核 (gauguin-r-oss 原厂 4.19.113)
         run: |
-          echo ">> 正在拉取 Gauguin (骁龙750G) 官方维护的干净主分支源码..."
-          git clone --depth=1 https://github.com/Molyuu/neko_kernel_xiaomi_gauguin.git -b main $GITHUB_WORKSPACE/kernel
+          echo ">> 正在克隆小米官方 gauguin-r-oss (MIUI 14 原生 4.19.113) 源码..."
+          git clone --depth=1 --single-branch -b gauguin-r-oss https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git $GITHUB_WORKSPACE/kernel
 
-      - name: 集成官方稳定版 KernelSU 驱动 (v0.9.5)
+      - name: 应用 MIUI 原厂模块兼容补丁与集成 KernelSU
         run: |
           cd $GITHUB_WORKSPACE/kernel
-          
+
+          echo ">> 修复 Ubuntu GCC 10+ 下 dtc-lexer yylloc 重复定义..."
+          sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/' scripts/dtc/dtc-lexer.l || true
+
+          echo ">> 移除 Makefile 中的 -Werror，避免 Clang 严格警告导致终止..."
+          sed -i 's/-Werror//g' Makefile || true
+
+          echo ">> 核心补丁：修改 kernel/module.c，无条件放行 MIUI 原厂 /vendor/lib/modules 硬件驱动..."
+          python3 - <<'PY'
+          p = "kernel/module.c"
+          with open(p, "r", encoding="utf-8", errors="ignore") as f:
+              s = f.read()
+
+          t1 = "static int check_version(const struct load_info *info,\n\t\t\t const char *symname,\n\t\t\t struct module *mod,\n\t\t\t const s32 *crc)\n{"
+          r1 = t1 + "\n\treturn 1;"
+          if t1 in s:
+              s = s.replace(t1, r1)
+              print("✔ 成功破解 check_version (符号 CRC 校验全面放行)")
+          else:
+              print("⚠ 未直接匹配到 t1，尝试正则表达式替换...")
+              import re
+              s, count1 = re.subn(r'(static\s+int\s+check_version\s*\([^\{]+\{)', r'\1\n\treturn 1;', s, count=1)
+              print(f"正则替换 check_version 结果: {count1} 处修改")
+
+          t2 = "static int check_modinfo(struct module *mod, struct load_info *info, int flags)\n{"
+          r2 = t2 + "\n\treturn 0;"
+          if t2 in s:
+              s = s.replace(t2, r2)
+              print("✔ 成功破解 check_modinfo (Vermagic 版本号校验全面放行)")
+          else:
+              print("⚠ 未直接匹配到 t2，尝试正则表达式替换...")
+              import re
+              s, count2 = re.subn(r'(static\s+int\s+check_modinfo\s*\([^\{]+\{)', r'\1\n\treturn 0;', s, count=1)
+              print(f"正则替换 check_modinfo 结果: {count2} 处修改")
+
+          with open(p, "w", encoding="utf-8") as f:
+              f.write(s)
+          PY
+
           # 清理旧有的残留链接或子模块目录
           rm -rf KernelSU KernelSU-Next drivers/kernelsu
-          
+
           KSU_VER="${{ github.event.inputs.ksu_version || 'v0.9.5' }}"
-          echo ">> 正在安装官方 KernelSU ($KSU_VER)..."
+          echo ">> 正在安装官方稳定版 KernelSU ($KSU_VER)..."
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s "$KSU_VER"
 
           DEFCONFIG="arch/arm64/configs/vendor/gauguin_user_defconfig"
-          echo ">> 开启 KPROBES、OVERLAY_FS 及 KSU 支持..."
+          echo ">> 开启 KPROBES、OVERLAY_FS 及 KSU 配置支持..."
           scripts/config --file $DEFCONFIG -e KPROBES
           scripts/config --file $DEFCONFIG -e HAVE_KPROBES
           scripts/config --file $DEFCONFIG -e KPROBE_EVENTS
@@ -63,7 +101,7 @@ jobs:
         run: |
           cd $GITHUB_WORKSPACE/kernel
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
-          
+
           echo ">> 生成内核 .config..."
           make O=out CC=clang ARCH=arm64 \
             CLANG_TRIPLE=aarch64-linux-gnu- \
@@ -78,6 +116,7 @@ jobs:
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
             OBJDUMP=llvm-objdump \
+            KCFLAGS="-w" \
             -j$(nproc) Image 2>&1 | tee $GITHUB_WORKSPACE/build.log
 
           if [ ! -f out/arch/arm64/boot/Image ]; then
@@ -96,24 +135,24 @@ jobs:
 
           # 拉取 AnyKernel3 模版
           git clone --depth=1 https://github.com/Molyuu/AnyKernel3.git -b main AnyKernel3
-          
+
           # 获取 Linux x86_64 架构原生的 magiskboot 二进制
           echo ">> 下载官方 x86_64 架构 magiskboot..."
           wget -q https://github.com/topjohnwu/Magisk/releases/download/v30.7/Magisk-v30.7.apk -O magisk.apk
           unzip -p magisk.apk lib/x86_64/libmagiskboot.so > magiskboot
           chmod +x magiskboot
-          
+
           # 解包原厂 pure_stock_boot.img 并合成 boot-kernelsu.img
           if [ -f "pure_stock_boot.img.gz" ]; then
             echo ">> 正在从原机纯净底包合成 boot-kernelsu.img..."
             gzip -dc pure_stock_boot.img.gz > pure_stock_boot.img
-            
+
             mkdir boot_unpack && cd boot_unpack
             ../magiskboot unpack ../pure_stock_boot.img
-            
+
             # 替换内核为刚刚编译出的 KernelSU 内核 (DTB 保留原机出厂 100% 完美匹配的 DTB)
             cp ../out_artifacts/Image kernel
-            
+
             ../magiskboot repack ../pure_stock_boot.img ../out_artifacts/boot-kernelsu.img
             # 提取原厂完美 DTB
             if [ -f dtb ]; then
